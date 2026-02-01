@@ -102,9 +102,9 @@ class FloatingService : Service() {
 
         // 如果没有权限数据且 mediaProjection 为 null，提示用户重新启动服务
         if (mediaProjection == null) {
-            // 在某些手机上，服务重启后需要用户重新授权
+            // 在某些手机上（如OPPO、华为等），服务重启后需要用户重新授权
             handler.post {
-                Toast.makeText(this, "服务已启动，如需截图请重启服务以获取权限", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "请前往应用设置，找到电池优化选项，将本应用设为"不叕制"，然后重启服务获取截图权限", Toast.LENGTH_LONG).show()
             }
         }
 
@@ -233,172 +233,31 @@ class FloatingService : Service() {
         if (mediaProjection == null) {
             // 在某些手机（如OPPO）上，服务可能在后台被系统回收了MediaProjection
             // 尝试重新启动服务
-            Toast.makeText(this, "截图权限异常，请返回应用重新启动服务", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "截图权限已失效，请重新启动服务获取截图权限", Toast.LENGTH_LONG).show()
             // 启动主Activity以便用户可以重新启动服务
-            val intent = Intent(this, MainActivity::class.java).apply {
+               val intent = Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
             startActivity(intent)
             return
         }
 
-        // 隐藏悬浮按钮
-        floatingView?.visibility = View.GONE
-
-        // 延迟执行，确保UI更新完成
-        handler.postDelayed({
-            captureScreen { bitmap ->
-                if (bitmap != null) {
-                    showDrawingOverlay(bitmap)
-                } else {
-                    // 如果截图失败，显示错误信息
-                    floatingView?.visibility = View.VISIBLE
-                    Toast.makeText(this, "截图失败，请稍后重试", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }, 200)
-    }
-
-    private fun restartServiceWithPermissionCheck() {
-        // 在某些手机上（如OPPO），需要通知用户重新启动服务
-        Toast.makeText(this, "请返回应用，停止并重新启动服务", Toast.LENGTH_LONG).show()
-    }
-
-    private fun captureScreen(callback: (Bitmap?) -> Unit) {
-        // 检查mediaProjection是否仍然有效
-        if (mediaProjection == null) {
-            callback(null)
-            return
-        }
-
+        // 额外检查：尝试创建一个临时虚拟显示器以验证MediaProjection是否仍然有效
         try {
-            imageReader?.close()
-            imageReader = ImageReader.newInstance(
-                screenWidth,
-                screenHeight,
-                PixelFormat.RGBA_8888,
-                2
-            )
-
-            // 创建虚拟显示用于截图
-            val tempVirtualDisplay = mediaProjection?.createVirtualDisplay(
-                "ScreenCaptureTemp",
+            val dummyImageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 1)
+            val dummyVirtualDisplay = mediaProjection?.createVirtualDisplay(
+                "TestDisplay",
                 screenWidth,
                 screenHeight,
                 screenDensity,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or 
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC,
-                imageReader?.surface,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION,
+                dummyImageReader.surface,
                 null,
                 handler
             )
-
-            if (tempVirtualDisplay == null) {
-                callback(null)
-                return
-            }
-
-            // 等待屏幕内容渲染
-            handler.postDelayed({
-                var bitmap: Bitmap? = null
-                var image: Image? = null
-                try {
-                    // 等待几帧以确保显示内容更新
-                    Thread.sleep(100)
-                    image = imageReader?.acquireLatestImage()
-                    if (image != null) {
-                        val planes = image.planes
-                        val buffer = planes[0].buffer
-                        val pixelStride = planes[0].pixelStride
-                        val rowStride = planes[0].rowStride
-                        val rowPadding = rowStride - pixelStride * screenWidth
-
-                        val bmp = Bitmap.createBitmap(
-                            screenWidth + rowPadding / pixelStride,
-                            screenHeight,
-                            Bitmap.Config.ARGB_8888
-                        )
-                        bmp.copyPixelsFromBuffer(buffer)
-
-                        // 裁剪到实际屏幕大小
-                        bitmap = Bitmap.createBitmap(bmp, 0, 0, screenWidth, screenHeight)
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                } finally {
-                    image?.close()
-                    tempVirtualDisplay.release()
-                }
-
-                callback(bitmap)
-            }, 150)
+            
+            // 如果能成功创建虚拟显示器，则说明MediaProjection仍然有效
+            dummyVirtualDisplay?.release()
+            dummyImageReader.close()
         } catch (e: Exception) {
-            e.printStackTrace()
-            callback(null)
-        }
-    }
-
-    private fun showDrawingOverlay(bitmap: Bitmap) {
-        val layoutParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            else
-                WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-        }
-
-        drawingOverlay = DrawingOverlayView(this, bitmap) { croppedBitmap ->
-            // 回调：裁剪完成或取消
-            removeDrawingOverlay()
-            floatingView?.visibility = View.VISIBLE
-
-            croppedBitmap?.let {
-                ImageSaver.saveImage(this, it) { success, path ->
-                    if (success) {
-                        Toast.makeText(this, "图片已保存: $path", Toast.LENGTH_LONG).show()
-                    } else {
-                        Toast.makeText(this, "保存失败", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-        }
-
-        windowManager.addView(drawingOverlay, layoutParams)
-    }
-
-    private fun removeDrawingOverlay() {
-        drawingOverlay?.let {
-            try {
-                windowManager.removeView(it)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-        drawingOverlay = null
-    }
-
-    override fun onDestroy() {
-        isRunning = false
-        floatingView?.let {
-            try {
-                windowManager.removeView(it)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-        removeDrawingOverlay()
-        virtualDisplay?.release()
-        imageReader?.close()
-        // 注销回调并停止MediaProjection
-        mediaProjection?.unregisterCallback(mediaProjectionCallback)
-        mediaProjection?.stop()
-        mediaProjection = null
-        super.onDestroy()
-    }
-}
+            // 如果无法创�
