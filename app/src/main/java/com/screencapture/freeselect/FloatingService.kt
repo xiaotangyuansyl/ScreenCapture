@@ -191,16 +191,25 @@ class FloatingService : Service() {
     }
 
     private fun startDrawingMode() {
+        // 在某些手机上（如OPPO），需要先检查虚拟显示是否还有效
         if (mediaProjection == null) {
-            Toast.makeText(this, "请重新启动服务获取截图权限", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "截图权限已失效，请重启服务", Toast.LENGTH_LONG).show()
+            restartServiceWithPermissionCheck()
             return
         }
 
         // 隐藏悬浮按钮
         floatingView?.visibility = View.GONE
 
-        // 延迟一点以确保悬浮按钮已隐藏
+        // 在OPPO等一些手机上，需要延迟更长时间确保权限稳定
         handler.postDelayed({
+            // 再次检查mediaProjection是否有效
+            if (mediaProjection == null) {
+                floatingView?.visibility = View.VISIBLE
+                Toast.makeText(this, "截图权限异常，请重启服务", Toast.LENGTH_LONG).show()
+                return@postDelayed
+            }
+            
             captureScreen { bitmap ->
                 if (bitmap != null) {
                     showDrawingOverlay(bitmap)
@@ -209,10 +218,21 @@ class FloatingService : Service() {
                     Toast.makeText(this, "截图失败", Toast.LENGTH_SHORT).show()
                 }
             }
-        }, 100)
+        }, 300) // 增加延迟时间以适应某些手机
+    }
+
+    private fun restartServiceWithPermissionCheck() {
+        // 在某些手机上（如OPPO），需要通知用户重新启动服务
+        Toast.makeText(this, "请返回应用，停止并重新启动服务", Toast.LENGTH_LONG).show()
     }
 
     private fun captureScreen(callback: (Bitmap?) -> Unit) {
+        // 检查mediaProjection是否仍然有效
+        if (mediaProjection == null) {
+            callback(null)
+            return
+        }
+
         imageReader?.close()
         imageReader = ImageReader.newInstance(
             screenWidth,
@@ -221,8 +241,8 @@ class FloatingService : Service() {
             2
         )
 
-        virtualDisplay?.release()
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
+        // 临时创建虚拟显示
+        val tempVirtualDisplay = mediaProjection?.createVirtualDisplay(
             "ScreenCapture",
             screenWidth,
             screenHeight,
@@ -233,37 +253,37 @@ class FloatingService : Service() {
             handler
         )
 
+        // 等待屏幕内容渲染
         handler.postDelayed({
-            val image: Image? = try {
-                imageReader?.acquireLatestImage()
+            var bitmap: Bitmap? = null
+            try {
+                val image: Image? = imageReader?.acquireLatestImage()
+                if (image != null) {
+                    val planes = image.planes
+                    val buffer = planes[0].buffer
+                    val pixelStride = planes[0].pixelStride
+                    val rowStride = planes[0].rowStride
+                    val rowPadding = rowStride - pixelStride * screenWidth
+
+                    val bmp = Bitmap.createBitmap(
+                        screenWidth + rowPadding / pixelStride,
+                        screenHeight,
+                        Bitmap.Config.ARGB_8888
+                    )
+                    bmp.copyPixelsFromBuffer(buffer)
+                    image.close()
+
+                    // 裁剪到实际屏幕大小
+                    bitmap = Bitmap.createBitmap(bmp, 0, 0, screenWidth, screenHeight)
+                }
             } catch (e: Exception) {
-                null
+                e.printStackTrace()
+            } finally {
+                tempVirtualDisplay?.release()
             }
-
-            val bitmap = image?.let { img ->
-                val planes = img.planes
-                val buffer = planes[0].buffer
-                val pixelStride = planes[0].pixelStride
-                val rowStride = planes[0].rowStride
-                val rowPadding = rowStride - pixelStride * screenWidth
-
-                val bmp = Bitmap.createBitmap(
-                    screenWidth + rowPadding / pixelStride,
-                    screenHeight,
-                    Bitmap.Config.ARGB_8888
-                )
-                bmp.copyPixelsFromBuffer(buffer)
-                img.close()
-
-                // 裁剪到实际屏幕大小
-                Bitmap.createBitmap(bmp, 0, 0, screenWidth, screenHeight)
-            }
-
-            virtualDisplay?.release()
-            virtualDisplay = null
 
             callback(bitmap)
-        }, 150)
+        }, 200) // 增加延时以适应某些手机
     }
 
     private fun showDrawingOverlay(bitmap: Bitmap) {
