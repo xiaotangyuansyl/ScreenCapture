@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:padding="32dp"
+    android:background="@color/white">
+
+    <ImageView
+        android:layout_width="100dp"
+        android:layout_height="100dp"
+        android:src="@android:drawable/ic_menu_camera"
+        android:layout_marginBottom="24dp" />
+
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="屏幕圈选截图工具"
+        android:textSize="18sp"
+        android:textAlignment="center"
+        android:gravity="center"
+        android:layout_marginBottom="32dp" />
+
+    <Button
+        android:id="@+id/startButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="启动服务"
+        android:paddingHorizontal="32dp"
+        android:paddingVertical="12dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="48dp"
+        android:text="使用说明：\n1. 点击启动服务按钮\n2. 授予悬浮窗和录屏权限\n3. 点击悬浮按钮开始截图\n4. 用手指圈选任意形状区域\n5. 点击保存按钮保存图片"
+        android:textSize="14sp"
+        android:textColor="#666666"
+        android:lineSpacingExtra="4dp" />
+
+</LinearLayout>
