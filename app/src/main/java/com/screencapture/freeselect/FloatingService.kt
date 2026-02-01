@@ -44,6 +44,21 @@ class FloatingService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    
+    private val mediaProjectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            super.onStop()
+            // 当MediaProjection被停止时（例如用户手动停止），更新状态
+            mediaProjection = null
+            Toast.makeText(this@FloatingService, "截图权限已停止，请重启服务", Toast.LENGTH_LONG).show()
+        }
+        
+        override fun onSuccess() {
+            super.onSuccess()
+            // 当MediaProjection成功时
+            Toast.makeText(this@FloatingService, "截图权限正常", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     private var screenWidth = 0
     private var screenHeight = 0
@@ -70,17 +85,26 @@ class FloatingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, createNotification())
 
-        intent?.let {
-            val resultCode = it.getIntExtra("resultCode", -1)
+        // 检查是否有传递过来的权限数据
+        if (intent != null) {
+            val resultCode = intent.getIntExtra("resultCode", -1)
             val data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                it.getParcelableExtra("data", Intent::class.java)
+                intent.getParcelableExtra("data", Intent::class.java)
             } else {
                 @Suppress("DEPRECATION")
-                it.getParcelableExtra("data")
+                intent.getParcelableExtra("data")
             }
 
             if (resultCode != -1 && data != null) {
                 setupMediaProjection(resultCode, data)
+            }
+        }
+
+        // 如果没有权限数据且 mediaProjection 为 null，提示用户重新启动服务
+        if (mediaProjection == null) {
+            // 在某些手机上，服务重启后需要用户重新授权
+            handler.post {
+                Toast.makeText(this, "服务已启动，如需截图请重启服务以获取权限", Toast.LENGTH_LONG).show()
             }
         }
 
@@ -121,8 +145,22 @@ class FloatingService : Service() {
     }
 
     private fun setupMediaProjection(resultCode: Int, data: Intent) {
-        val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
+        try {
+            val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
+            // 注册回调以监听权限变化
+            mediaProjection?.registerCallback(mediaProjectionCallback, handler)
+            
+            // 验证MediaProjection是否有效
+            if (mediaProjection != null) {
+                Toast.makeText(this, "截图权限获取成功", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "截图权限获取失败", Toast.LENGTH_LONG).show()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(this, "权限设置异常: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun createFloatingButton() {
@@ -191,34 +229,34 @@ class FloatingService : Service() {
     }
 
     private fun startDrawingMode() {
-        // 在某些手机上（如OPPO），需要先检查虚拟显示是否还有效
+        // 检查是否拥有必要的权限
         if (mediaProjection == null) {
-            Toast.makeText(this, "截图权限已失效，请重启服务", Toast.LENGTH_LONG).show()
-            restartServiceWithPermissionCheck()
+            // 在某些手机（如OPPO）上，服务可能在后台被系统回收了MediaProjection
+            // 尝试重新启动服务
+            Toast.makeText(this, "截图权限异常，请返回应用重新启动服务", Toast.LENGTH_LONG).show()
+            // 启动主Activity以便用户可以重新启动服务
+            val intent = Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            startActivity(intent)
             return
         }
 
         // 隐藏悬浮按钮
         floatingView?.visibility = View.GONE
 
-        // 在OPPO等一些手机上，需要延迟更长时间确保权限稳定
+        // 延迟执行，确保UI更新完成
         handler.postDelayed({
-            // 再次检查mediaProjection是否有效
-            if (mediaProjection == null) {
-                floatingView?.visibility = View.VISIBLE
-                Toast.makeText(this, "截图权限异常，请重启服务", Toast.LENGTH_LONG).show()
-                return@postDelayed
-            }
-            
             captureScreen { bitmap ->
                 if (bitmap != null) {
                     showDrawingOverlay(bitmap)
                 } else {
+                    // 如果截图失败，显示错误信息
                     floatingView?.visibility = View.VISIBLE
-                    Toast.makeText(this, "截图失败", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "截图失败，请稍后重试", Toast.LENGTH_SHORT).show()
                 }
             }
-        }, 300) // 增加延迟时间以适应某些手机
+        }, 200)
     }
 
     private fun restartServiceWithPermissionCheck() {
@@ -233,57 +271,71 @@ class FloatingService : Service() {
             return
         }
 
-        imageReader?.close()
-        imageReader = ImageReader.newInstance(
-            screenWidth,
-            screenHeight,
-            PixelFormat.RGBA_8888,
-            2
-        )
+        try {
+            imageReader?.close()
+            imageReader = ImageReader.newInstance(
+                screenWidth,
+                screenHeight,
+                PixelFormat.RGBA_8888,
+                2
+            )
 
-        // 临时创建虚拟显示
-        val tempVirtualDisplay = mediaProjection?.createVirtualDisplay(
-            "ScreenCapture",
-            screenWidth,
-            screenHeight,
-            screenDensity,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface,
-            null,
-            handler
-        )
+            // 创建虚拟显示用于截图
+            val tempVirtualDisplay = mediaProjection?.createVirtualDisplay(
+                "ScreenCaptureTemp",
+                screenWidth,
+                screenHeight,
+                screenDensity,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY or 
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC,
+                imageReader?.surface,
+                null,
+                handler
+            )
 
-        // 等待屏幕内容渲染
-        handler.postDelayed({
-            var bitmap: Bitmap? = null
-            try {
-                val image: Image? = imageReader?.acquireLatestImage()
-                if (image != null) {
-                    val planes = image.planes
-                    val buffer = planes[0].buffer
-                    val pixelStride = planes[0].pixelStride
-                    val rowStride = planes[0].rowStride
-                    val rowPadding = rowStride - pixelStride * screenWidth
-
-                    val bmp = Bitmap.createBitmap(
-                        screenWidth + rowPadding / pixelStride,
-                        screenHeight,
-                        Bitmap.Config.ARGB_8888
-                    )
-                    bmp.copyPixelsFromBuffer(buffer)
-                    image.close()
-
-                    // 裁剪到实际屏幕大小
-                    bitmap = Bitmap.createBitmap(bmp, 0, 0, screenWidth, screenHeight)
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            } finally {
-                tempVirtualDisplay?.release()
+            if (tempVirtualDisplay == null) {
+                callback(null)
+                return
             }
 
-            callback(bitmap)
-        }, 200) // 增加延时以适应某些手机
+            // 等待屏幕内容渲染
+            handler.postDelayed({
+                var bitmap: Bitmap? = null
+                var image: Image? = null
+                try {
+                    // 等待几帧以确保显示内容更新
+                    Thread.sleep(100)
+                    image = imageReader?.acquireLatestImage()
+                    if (image != null) {
+                        val planes = image.planes
+                        val buffer = planes[0].buffer
+                        val pixelStride = planes[0].pixelStride
+                        val rowStride = planes[0].rowStride
+                        val rowPadding = rowStride - pixelStride * screenWidth
+
+                        val bmp = Bitmap.createBitmap(
+                            screenWidth + rowPadding / pixelStride,
+                            screenHeight,
+                            Bitmap.Config.ARGB_8888
+                        )
+                        bmp.copyPixelsFromBuffer(buffer)
+
+                        // 裁剪到实际屏幕大小
+                        bitmap = Bitmap.createBitmap(bmp, 0, 0, screenWidth, screenHeight)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    image?.close()
+                    tempVirtualDisplay.release()
+                }
+
+                callback(bitmap)
+            }, 150)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            callback(null)
+        }
     }
 
     private fun showDrawingOverlay(bitmap: Bitmap) {
@@ -343,7 +395,10 @@ class FloatingService : Service() {
         removeDrawingOverlay()
         virtualDisplay?.release()
         imageReader?.close()
+        // 注销回调并停止MediaProjection
+        mediaProjection?.unregisterCallback(mediaProjectionCallback)
         mediaProjection?.stop()
+        mediaProjection = null
         super.onDestroy()
     }
 }
